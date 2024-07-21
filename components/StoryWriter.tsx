@@ -4,6 +4,8 @@ import { useState } from "react"
 import { Button } from "./ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select"
 import { Textarea } from "./ui/textarea"
+import { Frame } from "@gptscript-ai/gptscript"
+import renderEventMessage from "@/lib/renderEventMessage"
 
 const StoryWriter = () => {
   const [story, setStory] = useState<string>("");
@@ -12,8 +14,9 @@ const StoryWriter = () => {
   const [runStarted, setRunStarted] = useState<boolean>(false);
   const [runFinished, setRunFinished] = useState<boolean | null>(null);
   const [currentTool, setCurrentTool] = useState("");
-  
- const storiesPath = "public/stories"
+  const [events, setEvents] = useState<Frame[]>([]);
+
+  const storiesPath = "public/stories"
 
   async function runScript(){
     setRunStarted(true);
@@ -28,11 +31,51 @@ const StoryWriter = () => {
 
     if (response.ok && response.body){
         // Handle streams from the API
-        console.log("Streaming Started")
+        console.log("Streaming Started");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        handleStream(reader, decoder);
     } else {
         setRunFinished(true);
         setRunStarted(false);
         console.error("Failed to start streaming");
+    }
+  }
+
+  async function handleStream(reader: ReadableStreamDefaultReader<Uint8Array>, decoder: TextDecoder){
+    // Manage stream from API...
+    while(true){
+        const { done, value } = await reader.read();
+        if (done) break; // breaks out of infinity loop
+        
+        // Explanation: The decoder is used to decode the Uint8Array into a String
+        const chunk = decoder.decode(value, { stream: true });
+        // Explanation: We split the chink into events by splitting it by the event: keyword
+        const eventData = chunk
+        .split("\n\n")
+        .filter((line) => line.startsWith("event: "))
+        .map((line => line.replace(/^event: /, "")));
+        // Explanation: We parse the JSON data and update the state accordingly.
+        eventData.forEach(data => {
+            try {
+                const parsedData = JSON.parse(data);
+                if(parsedData.type === "callProgress"){
+                    setProgress(parsedData.output[parsedData.output.length - 1].content)
+                    setCurrentTool(parsedData.tool?.description || "");
+                } else if (parsedData.type === "callStart") {
+                    setCurrentTool(parsedData.tool?.description || "");
+                } else if (parsedData.type === "runFinish"){
+                    setRunFinished(true);
+                    setRunStarted(false);
+                } else {
+                    setEvents((prevEvents) => [...prevEvents, parsedData]);
+                }
+            } catch (error){
+                console.error("Failed to parse JSON" , error);
+            }
+        })
     }
   }
 
@@ -83,6 +126,14 @@ const StoryWriter = () => {
                         {currentTool}
                     </div>
                 )}
+                <div className="space-y-5">
+                    {events.map((event, index) => (
+                        <div key={index}>
+                            <span className="mr-5">{">>"}</span>
+                            {renderEventMessage(event)}
+                        </div>
+                    ))}
+                </div>
                 {runStarted && (
                     <div>
                         <span className="mr-5 animate-in">
